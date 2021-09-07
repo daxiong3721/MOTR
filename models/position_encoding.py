@@ -39,22 +39,30 @@ class PositionEmbeddingSine(nn.Module):
         x = tensor_list.tensors
         mask = tensor_list.mask
         assert mask is not None
-        not_mask = ~mask
-        y_embed = not_mask.cumsum(1, dtype=torch.float32)
+        not_mask = ~mask # bs x h x w ??
+        # bs x h x w , e.g. 2x2
+        #   0, 0
+        #   1, 1   
+        y_embed = not_mask.cumsum(1, dtype=torch.float32) 
+        # bs x h x w , e.g. 2x2
+        #   0, 1
+        #   0, 1   
         x_embed = not_mask.cumsum(2, dtype=torch.float32)
         if self.normalize:
             eps = 1e-6
             y_embed = (y_embed - 0.5) / (y_embed[:, -1:, :] + eps) * self.scale
             x_embed = (x_embed - 0.5) / (x_embed[:, :, -1:] + eps) * self.scale
 
-        dim_t = torch.arange(self.num_pos_feats, dtype=torch.float32, device=x.device)
-        dim_t = self.temperature ** (2 * (dim_t // 2) / self.num_pos_feats)
-
-        pos_x = x_embed[:, :, :, None] / dim_t
-        pos_y = y_embed[:, :, :, None] / dim_t
-        pos_x = torch.stack((pos_x[:, :, :, 0::2].sin(), pos_x[:, :, :, 1::2].cos()), dim=4).flatten(3)
+        # PE_2i(p) = sin(p / 10000^(2i/dpos))
+        # PE_2i+1(p) = cos(p / 10000^(2i/dpos))
+        dim_t = torch.arange(self.num_pos_feats, dtype=torch.float32, device=x.device) # [dpos], i: 0,1,2,3,...
+        dim_t = self.temperature ** (2 * (dim_t // 2) / self.num_pos_feats) # [dpos], 10000^(2i/dpos)
+        
+        pos_x = x_embed[:, :, :, None] / dim_t # [bs,h,w,None]/[dpos] = Broadcasting to [bs,h,w,dpos]/[bs,h,w,dpos] = [bs,h,w,dpos] ,  p / 10000^(2i/dpos)
+        pos_y = y_embed[:, :, :, None] / dim_t # [bs,h,w,None]/[dpos] = [bs,h,w,dpos]
+        pos_x = torch.stack((pos_x[:, :, :, 0::2].sin(), pos_x[:, :, :, 1::2].cos()), dim=4).flatten(3) #  stack([bs,h,w,dpos/2],[bs,h,w,dpos/2], dim=4) = [bs,h,w,dpos/2,2] -> [bs,h,w,dpos]
         pos_y = torch.stack((pos_y[:, :, :, 0::2].sin(), pos_y[:, :, :, 1::2].cos()), dim=4).flatten(3)
-        pos = torch.cat((pos_y, pos_x), dim=3).permute(0, 3, 1, 2)
+        pos = torch.cat((pos_y, pos_x), dim=3).permute(0, 3, 1, 2) # ([bs,h,w,dpos],[bs,h,w,dpos]) -> [bs,h,w,2*dpos] -> [bs,2*dpos,h,w]
         return pos
 
 
@@ -73,21 +81,21 @@ class PositionEmbeddingLearned(nn.Module):
         nn.init.uniform_(self.col_embed.weight)
 
     def forward(self, tensor_list: NestedTensor):
-        x = tensor_list.tensors
+        x = tensor_list.tensors # [bs,c,h,w], bs = batch*level?
         h, w = x.shape[-2:]
-        i = torch.arange(w, device=x.device)
-        j = torch.arange(h, device=x.device)
-        x_emb = self.col_embed(i)
-        y_emb = self.row_embed(j)
+        i = torch.arange(w, device=x.device) #[w], 0,1,2,3,...
+        j = torch.arange(h, device=x.device) #[h], 0,1,2,3,...
+        x_emb = self.col_embed(i) # [50,dpos] -> [w, dpos]
+        y_emb = self.row_embed(j) # [50,dpos] -> [h, dpos]
         pos = torch.cat([
-            x_emb.unsqueeze(0).repeat(h, 1, 1),
-            y_emb.unsqueeze(1).repeat(1, w, 1),
-        ], dim=-1).permute(2, 0, 1).unsqueeze(0).repeat(x.shape[0], 1, 1, 1)
+            x_emb.unsqueeze(0).repeat(h, 1, 1), # [w, dpos] -> [1,w,dpos] -> [h,w,dpos]
+            y_emb.unsqueeze(1).repeat(1, w, 1), # [h, dpos] -> [h,1,dpos] -> [h,w,dpos]
+        ], dim=-1).permute(2, 0, 1).unsqueeze(0).repeat(x.shape[0], 1, 1, 1) # [h,w,2*dpos] -> [2*dpos,h,w] -> [1,2*dpos,h,w] -> [bs,2*dpos,h,w]
         return pos
 
 
 def build_position_encoding(args):
-    N_steps = args.hidden_dim // 2
+    N_steps = args.hidden_dim // 2 # 256//2=128
     if args.position_embedding in ('v2', 'sine'):
         # TODO find a better way of exposing other arguments
         position_embedding = PositionEmbeddingSine(N_steps, normalize=True)
@@ -95,5 +103,5 @@ def build_position_encoding(args):
         position_embedding = PositionEmbeddingLearned(N_steps)
     else:
         raise ValueError(f"not supported {args.position_embedding}")
-
+    # [bs,256,h,w]
     return position_embedding

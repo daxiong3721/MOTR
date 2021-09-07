@@ -84,11 +84,12 @@ class BackboneBase(nn.Module):
         self.body = IntermediateLayerGetter(backbone, return_layers=return_layers)
 
     def forward(self, tensor_list: NestedTensor):
-        xs = self.body(tensor_list.tensors)
+        xs = self.body(tensor_list.tensors) # get output layers result
         out: Dict[str, NestedTensor] = {}
         for name, x in xs.items():
             m = tensor_list.mask
             assert m is not None
+            # reshape mask to the level shape
             mask = F.interpolate(m[None].float(), size=x.shape[-2:]).to(torch.bool)[0]
             out[name] = NestedTensor(x, mask)
         return out
@@ -117,17 +118,19 @@ class Joiner(nn.Sequential):
         self.num_channels = backbone.num_channels
 
     def forward(self, tensor_list: NestedTensor):
-        xs = self[0](tensor_list)
+        xs = self[0](tensor_list) # backone(tensor_list), [bs,c,h,w] -> {'layer1':tensor[bs,c1,h1,w1], 'layer2':tensor[bs,c2,h2,w2]}
         out: List[NestedTensor] = []
         pos = []
-        for name, x in sorted(xs.items()):
+        for name, x in sorted(xs.items()): # layer_name, tensor
             out.append(x)
 
         # position encoding
         for x in out:
-            pos.append(self[1](x).to(x.tensors.dtype))
+            pos.append(self[1](x).to(x.tensors.dtype)) # tensor[bs,c1,h1,w1] -> [bs,dpos,h1,w1], tensor[bs,c2,h2,w2] -> [bs,dpos,h2,w2]
 
-        return out, pos
+        return out, pos 
+        # out=[tensor[bs,c1  ,h1,w1], tensor[bs,  c2,h2,w2]]
+        # pos=[tensor[bs,dpos,h1,w1], tensor[bs,dpos,h2,w2]]
 
 
 def build_backbone(args):
@@ -136,4 +139,7 @@ def build_backbone(args):
     return_interm_layers = args.masks or (args.num_feature_levels > 1)
     backbone = Backbone(args.backbone, train_backbone, return_interm_layers, args.dilation)
     model = Joiner(backbone, position_embedding)
+    # Note:
+    # features, pos = self.backbone(samples)
+    # src, mask = features[-1].decompose()
     return model
