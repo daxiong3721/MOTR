@@ -44,11 +44,17 @@ class MSDeformAttnFunction(Function):
 def ms_deform_attn_core_pytorch(value, value_spatial_shapes, sampling_locations, attention_weights):
     # for debug and test only,
     # need to use cuda version instead
-    N_, S_, M_, D_ = value.shape
+    # N, Len_in(sum_H_l*W_l), n_heads, d_model/n_head
+    N_, S_, M_, D_ = value.shape 
+    # [N, Len_q, n_heads, n_levels, n_points, 2]
     _, Lq_, M_, L_, P_, _ = sampling_locations.shape
+    # [N, Len_in(sum_H_l*W_l), n_heads, d_model/n_head] 
+    #  -> [[N, h1*w1, n_heads, d_model/n_head], [N, h2*w2, n_heads, d_model/n_head], ...]
     value_list = value.split([H_ * W_ for H_, W_ in value_spatial_shapes], dim=1)
-    sampling_grids = 2 * sampling_locations - 1
+    # [N, Len_q, n_heads, n_levels, n_points, 2]
+    sampling_grids = 2 * sampling_locations - 1 # value range from [0,1] to [-1,1]
     sampling_value_list = []
+    # TODO ref https://www.jianshu.com/p/a59990905016 merge and sample
     for lid_, (H_, W_) in enumerate(value_spatial_shapes):
         # N_, H_*W_, M_, D_ -> N_, H_*W_, M_*D_ -> N_, M_*D_, H_*W_ -> N_*M_, D_, H_, W_
         value_l_ = value_list[lid_].flatten(2).transpose(1, 2).reshape(N_*M_, D_, H_, W_)
@@ -58,7 +64,11 @@ def ms_deform_attn_core_pytorch(value, value_spatial_shapes, sampling_locations,
         sampling_value_l_ = F.grid_sample(value_l_, sampling_grid_l_,
                                           mode='bilinear', padding_mode='zeros', align_corners=False)
         sampling_value_list.append(sampling_value_l_)
-    # (N_, Lq_, M_, L_, P_) -> (N_, M_, Lq_, L_, P_) -> (N_, M_, 1, Lq_, L_*P_)
+    # [N, Len_q, n_heads, n_levels, n_points]
+    # (N_, Lq_, M_, L_, P_) -> (N_, M_, Lq_, L_, P_) -> (N_*M_, 1, Lq_, L_*P_)
     attention_weights = attention_weights.transpose(1, 2).reshape(N_*M_, 1, Lq_, L_*P_)
+    #[[N_*M_, D_, Lq_, P_],...] -> [N_*M_, D_, Lq_, L_, P_] -> [N_*M_, D_, Lq_, L_*P_]  
+    # [N_*M_, D_, Lq_, L_*P_] * (N_*M_, 1, Lq_, L_*P_) -> [N_*M_, D_, Lq_, L_*P_] -> [N_*M_, D_, Lq_, 1] -> [N_, M_*D_, Lq_]
     output = (torch.stack(sampling_value_list, dim=-2).flatten(-2) * attention_weights).sum(-1).view(N_, M_*D_, Lq_)
+    # [N_, M_*D_, Lq_] -> [N_, Lq_, M_*D_] = [N, Len_q, d_model]
     return output.transpose(1, 2).contiguous()

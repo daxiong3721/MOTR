@@ -629,8 +629,8 @@ def build(args):
     backbone = build_backbone(args)
 
     transformer = build_deforamble_transformer(args)
-    d_model = transformer.d_model
-    hidden_dim = args.dim_feedforward
+    d_model = transformer.d_model # 256
+    hidden_dim = args.dim_feedforward # 1024
     query_interaction_layer = build_query_interaction_layer(args, args.query_interaction_layer, d_model, hidden_dim, d_model*2)
 
     img_matcher = build_matcher(args)

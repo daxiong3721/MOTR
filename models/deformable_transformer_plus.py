@@ -144,19 +144,19 @@ class DeformableTransformer(nn.Module):
             bs, c, h, w = src.shape
             spatial_shape = (h, w)
             spatial_shapes.append(spatial_shape)
-            src = src.flatten(2).transpose(1, 2)
-            mask = mask.flatten(1)
-            pos_embed = pos_embed.flatten(2).transpose(1, 2)
-            lvl_pos_embed = pos_embed + self.level_embed[lvl].view(1, 1, -1)
-            lvl_pos_embed_flatten.append(lvl_pos_embed)
+            src = src.flatten(2).transpose(1, 2)  # bs x c x h x w -> bs x c x hw -> bs x hw x c
+            mask = mask.flatten(1) # bs x hw
+            pos_embed = pos_embed.flatten(2).transpose(1, 2) # bs x c x h x w -> bs x c x hw -> bs x hw x c
+            lvl_pos_embed = pos_embed + self.level_embed[lvl].view(1, 1, -1) # bs x hw x c + 1 x 1 x c, 每一level提供一个可学习的编码
+            lvl_pos_embed_flatten.append(lvl_pos_embed)  # 分别flatten之后append，方便encoder调用，即所有的keys
             src_flatten.append(src)
             mask_flatten.append(mask)
-        src_flatten = torch.cat(src_flatten, 1)
-        mask_flatten = torch.cat(mask_flatten, 1)
-        lvl_pos_embed_flatten = torch.cat(lvl_pos_embed_flatten, 1)
-        spatial_shapes = torch.as_tensor(spatial_shapes, dtype=torch.long, device=src_flatten.device)
-        level_start_index = torch.cat((spatial_shapes.new_zeros((1, )), spatial_shapes.prod(1).cumsum(0)[:-1]))
-        valid_ratios = torch.stack([self.get_valid_ratio(m) for m in masks], 1)
+        src_flatten = torch.cat(src_flatten, 1) # bs x (hw+...) x c
+        mask_flatten = torch.cat(mask_flatten, 1) # bs x (hw+...)
+        lvl_pos_embed_flatten = torch.cat(lvl_pos_embed_flatten, 1) # bs x (hw+...) x c
+        spatial_shapes = torch.as_tensor(spatial_shapes, dtype=torch.long, device=src_flatten.device) # Level x 2
+        level_start_index = torch.cat((spatial_shapes.new_zeros((1, )), spatial_shapes.prod(1).cumsum(0)[:-1])) # h1w1, h1w1+h2w2, ...
+        valid_ratios = torch.stack([self.get_valid_ratio(m) for m in masks], 1) # bs x num_level x 2
 
         # encoder
         memory = self.encoder(src_flatten, spatial_shapes, level_start_index, valid_ratios, lvl_pos_embed_flatten, mask_flatten)
@@ -178,12 +178,12 @@ class DeformableTransformer(nn.Module):
             pos_trans_out = self.pos_trans_norm(self.pos_trans(self.get_proposal_pos_embed(topk_coords_unact)))
             query_embed, tgt = torch.split(pos_trans_out, c, dim=2)
         else:
-            query_embed, tgt = torch.split(query_embed, c, dim=1)
-            query_embed = query_embed.unsqueeze(0).expand(bs, -1, -1)
-            tgt = tgt.unsqueeze(0).expand(bs, -1, -1)
+            query_embed, tgt = torch.split(query_embed, c, dim=1) # Lq x d_model
+            query_embed = query_embed.unsqueeze(0).expand(bs, -1, -1) # bs x Lq x d_model     每个sample的query相同，参考位置也相同
+            tgt = tgt.unsqueeze(0).expand(bs, -1, -1)  # 初始的query
             
             if ref_pts is None:
-                reference_points = self.reference_points(query_embed).sigmoid()
+                reference_points = self.reference_points(query_embed).sigmoid()  # 每个query是学习到不同的参考位置
             else:
                 reference_points = ref_pts.unsqueeze(0).repeat(bs, 1, 1).sigmoid()
             init_reference_out = reference_points
